@@ -22,6 +22,7 @@ const openAIBase = () => `${origin()}/v2/ai/openai`
 const modelsURL = () => `${origin()}/v2/ai/models`
 const balanceURL = () => `${origin()}/v2/balance`
 const whoamiURL = () => `${origin()}/v2/whoami`
+const promoURL = () => `${origin()}/v2/balance/promo-credits`
 
 // The tasks the OpenAI-compatible chat endpoint serves. Telnyx uses both
 // spellings across the catalog ("text-generation", "text generation") and
@@ -86,7 +87,27 @@ function modelEntry(m) {
   return entry
 }
 
-export async function TelnyxAuthPlugin() {
+
+// Remember the biggest wallet balance seen on this account, on the auth
+// record, so a plain (non-promotion) balance can still show a progress bar.
+async function rememberTotalCredit(client, getAuth, balance) {
+  let previous = 0
+  let auth
+  try {
+    auth = await getAuth()
+    const n = Number(auth?.creditTotalUsd)
+    if (Number.isFinite(n)) previous = n
+  } catch {}
+  const next = Math.max(previous, Number.isFinite(balance) ? balance : 0)
+  if (next > previous && client?.auth?.set && auth) {
+    try {
+      await client.auth.set({ path: { id: PROVIDER }, body: { ...auth, creditTotalUsd: next } })
+    } catch {}
+  }
+  return next
+}
+
+export async function TelnyxAuthPlugin({ client } = {}) {
   return {
     // Declare the provider before anyone signs in. ??= keeps a provider block
     // the user edited in plugins.json.
@@ -138,18 +159,18 @@ export async function TelnyxAuthPlugin() {
       },
 
       // magpie's own hook: the account's wallet. Telnyx exposes a prepaid
-      // balance (USD) plus a pending amount; it does not expose a credit or
-      // plan expiry through the public API, so none is invented here. When
-      // the portal shows a "days left" date for the credit, set
-      // TELNYX_CREDIT_EXPIRES_AT to that ISO time and it is passed as
-      // `until` (magpie shows it on the account card and in magpie quota).
+      // USD balance at GET /v2/balance; a promotion (Pretrial AI credits) has
+      // its own grant with total/remaining/period_end at
+      // GET /v2/balance/promo-credits. We return a normal usage window so
+      // magpie draws a progress bar: amount spent = limit - remaining.
       async usage(getAuth) {
         const auth = await getAuth()
         if (auth?.type !== "api" || !auth.key) return { error: "not signed in", windows: [] }
         try {
           const headers = { authorization: `Bearer ${auth.key}`, accept: "application/json" }
-          const [balRes, meRes] = await Promise.all([
+          const [balRes, promoRes, meRes] = await Promise.all([
             fetch(balanceURL(), { headers, signal: AbortSignal.timeout(15000) }),
+            fetch(promoURL(), { headers, signal: AbortSignal.timeout(15000) }).catch(() => null),
             fetch(whoamiURL(), { headers, signal: AbortSignal.timeout(15000) }).catch(() => null),
           ])
           if (!balRes.ok) return { error: `Telnyx answered ${balRes.status}`, windows: [] }
@@ -158,19 +179,46 @@ export async function TelnyxAuthPlugin() {
           const balance = Number(b.balance)
           const available = Number(b.available_credit)
           const pending = Number(b.pending)
-          const currency = typeof b.currency === "string" && b.currency ? b.currency : "USD"
+          let currency = typeof b.currency === "string" && b.currency ? b.currency : "USD"
           const money = (v) => `$${v.toFixed(2)}`
 
-          const windows = []
-          if (Number.isFinite(balance)) {
-            // A prepaid wallet: remaining amount, no used/limit. It is the
-            // wallet requests are billed from, so it is not `aside`.
-            windows.push({ name: "Telnyx 余额", balance, unit: currency, display: money(balance) })
+          const promo = (await promoRes?.json?.().catch(() => null))?.data?.[0]
+          const promoTotal = promo ? Number(promo.max_discount_amount) : NaN
+          const promoRemaining = promo ? Number(promo.remaining_credits) : NaN
+          const promoEnd = promo && typeof promo.period_end === "string" ? promo.period_end : undefined
+
+          let remaining = balance
+          let total
+          let name = "Telnyx 余额"
+          if (Number.isFinite(promoTotal) && promoTotal > 0) {
+            // A promotion grant: its own total, remaining and end date.
+            total = promoTotal
+            remaining = Number.isFinite(promoRemaining) ? promoRemaining : promoTotal
+            if (typeof promo.currency === "string" && promo.currency) currency = promo.currency
+            name = "Telnyx AI 额度"
+          } else {
+            // A plain wallet: remember the largest balance seen, so spend
+            // is measurable across plugin-host restarts (stored on the auth
+            // record). No public API gives a total or an expiry for it.
+            total = await rememberTotalCredit(client, getAuth, balance)
           }
+
+          const windows = []
+          if (Number.isFinite(remaining) && Number.isFinite(total) && total > 0) {
+            const usedAmount = Math.max(0, total - remaining)
+            windows.push({ name, amount: usedAmount, limit: total, unit: currency })
+          } else if (Number.isFinite(balance)) {
+            windows.push({ name, balance, unit: currency, display: money(balance) })
+          }
+
+          const until = promoEnd || process.env.TELNYX_CREDIT_EXPIRES_AT?.trim()
+          if (until) windows.push({ name: "额度到期", used: 0, display: String(until).slice(0, 10), aside: true })
+          else windows.push({ name: "额度到期", used: 0, display: "未提供（API 无到期字段）", aside: true })
+
           if (Number.isFinite(pending) && pending > 0) {
             windows.push({ name: "待结算", used: 0, display: money(pending), aside: true })
           }
-          if (Number.isFinite(available) && available !== balance) {
+          if (Number.isFinite(available) && Number.isFinite(balance) && available !== balance) {
             windows.push({ name: "可用额度", used: 0, display: money(available), aside: true })
           }
 
@@ -180,7 +228,6 @@ export async function TelnyxAuthPlugin() {
             if (typeof me?.user_email === "string" && me.user_email) user = me.user_email
           }
 
-          const until = process.env.TELNYX_CREDIT_EXPIRES_AT?.trim()
           const out = { windows, signIn: "kept" }
           if (Number.isFinite(balance)) out.balance = money(balance)
           if (user) out.user = user

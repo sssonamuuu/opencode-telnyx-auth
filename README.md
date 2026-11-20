@@ -38,27 +38,23 @@ magpie provider test telnyx       # 发一条最小对话验证
 
 ## 用量（magpie quota / 账号卡片）
 
-`auth.usage` 按官方格式返回，`magpie quota` 里会长这样：
-
-```
-telnyx · sonamu.liao@gmail.com (API key …KPxs) subscription  Telnyx 余额 5 USD left
-```
-
-返回结构：
+`auth.usage` 按官方 `windows` 结构返回，**有 `amount`/`limit` 才会画出进度条**：
 
 ```json
 {
-  "user": "sonamu.liao@gmail.com",       // 来自 GET /v2/whoami
-  "balance": "$5.00",                    // 顶层余额字符串
+  "user": "sonamu.liao@gmail.com",
+  "balance": "$5.00",
   "windows": [
-    { "name": "Telnyx 余额", "balance": 5, "unit": "USD", "display": "$5.00" }
+    { "name": "Telnyx 余额", "amount": 0, "limit": 5, "unit": "USD" },
+    { "name": "额度到期", "used": 0, "display": "未提供（API 无到期字段）", "aside": true }
   ],
   "signIn": "kept"
 }
 ```
 
-- 余额是**预付钱包**，所以用官方的 `balance` 字段（不写 `used`/`limit`），它会真正参与账号选择；`pending` 有值时会额外加一个 `aside` 的"待结算"窗口。
-- **过期时间**：Telnyx 公共 API（`/v2/balance`、`/v2/whoami`）**不返回**额度或套餐的到期时间（Portal 里那句 "days left" 只在网页端）。所以插件不编造；如果你在 Portal 看到具体到期时间，设环境变量 `TELNYX_CREDIT_EXPIRES_AT=<ISO 时间>`（例如 `2026-12-20T00:00:00+08:00`），magpie 会把 `until` 显示在账号卡片上。`/v2/api_keys` 里 key 的 `expires_at` 目前是 `null`，也不适用。
+- **进度**：`amount = limit - 剩余`。普通钱包（`/v2/balance`）没有"总额"字段，插件会把首次看到的最大余额记在 auth 记录的 `creditTotalUsd` 里作 `limit`，之后余额下降就是已用；充值导致余额变大时 `limit` 跟着变大。
+- **Promotion 额度**（Pretrial 的 AI credits）：读 `GET /v2/balance/promo-credits`，用 `max_discount_amount` 作 `limit`、`remaining_credits` 作剩余、`period_end` 作到期时间，窗口名是「Telnyx AI 额度」，到期日会作为 `aside` 窗口和顶层 `until` 显示。
+- **过期时间**：你升级后的这笔 **$5 是普通余额，`/v2/balance/promo-credits` 返回空**，Telnyx 公共 API 没有任何到期字段（`/v2/balance`、`/v2/whoami`、`/v2/api_keys` 的 `expires_at` 都是 null/无）。所以插件显示「未提供」而不是编一个日期。若 Portal 里有确切日期，设 `TELNYX_CREDIT_EXPIRES_AT=<ISO>` 即可显示。
 
 ## 账号侧限制（官方明确规定，不是插件问题）
 
