@@ -203,17 +203,19 @@ export async function TelnyxAuthPlugin({ client } = {}) {
             total = await rememberTotalCredit(client, getAuth, balance)
           }
 
+          const until = promoEnd || process.env.TELNYX_CREDIT_EXPIRES_AT?.trim()
+          const expiryText = until ? `到期 ${String(until).slice(0, 10)}` : "到期 未提供（API 无字段）"
+
           const windows = []
           if (Number.isFinite(remaining) && Number.isFinite(total) && total > 0) {
             const usedAmount = Math.max(0, total - remaining)
-            windows.push({ name, amount: usedAmount, limit: total, unit: currency })
+            // `used` is a percentage, which is what draws the progress bar;
+            // `display` carries the money amounts and the expiry in words.
+            const percent = Math.max(0, Math.min(100, (usedAmount / total) * 100))
+            windows.push({ name, used: percent, unit: currency, display: `${money(remaining)} / ${money(total)} · ${expiryText}` })
           } else if (Number.isFinite(balance)) {
             windows.push({ name, balance, unit: currency, display: money(balance) })
           }
-
-          const until = promoEnd || process.env.TELNYX_CREDIT_EXPIRES_AT?.trim()
-          if (until) windows.push({ name: "额度到期", used: 0, display: String(until).slice(0, 10), aside: true })
-          else windows.push({ name: "额度到期", used: 0, display: "未提供（API 无到期字段）", aside: true })
 
           if (Number.isFinite(pending) && pending > 0) {
             windows.push({ name: "待结算", used: 0, display: money(pending), aside: true })

@@ -45,12 +45,14 @@ magpie provider test telnyx       # 发一条最小对话验证
   "user": "sonamu.liao@gmail.com",
   "balance": "$5.00",
   "windows": [
-    { "name": "Telnyx 余额", "amount": 0, "limit": 5, "unit": "USD" },
-    { "name": "额度到期", "used": 0, "display": "未提供（API 无到期字段）", "aside": true }
+    { "name": "Telnyx 余额", "used": 0, "unit": "USD",
+      "display": "$5.00 / $5.00 · 到期 未提供（API 无字段）" }
   ],
   "signIn": "kept"
 }
 ```
+
+`magpie quota` 里：`Telnyx 余额 0% ($5.00 / $5.00 · 到期 未提供（API 无字段）)`。
 
 - **进度**：`amount = limit - 剩余`。普通钱包（`/v2/balance`）没有"总额"字段，插件会把首次看到的最大余额记在 auth 记录的 `creditTotalUsd` 里作 `limit`，之后余额下降就是已用；充值导致余额变大时 `limit` 跟着变大。
 - **Promotion 额度**（Pretrial 的 AI credits）：读 `GET /v2/balance/promo-credits`，用 `max_discount_amount` 作 `limit`、`remaining_credits` 作剩余、`period_end` 作到期时间，窗口名是「Telnyx AI 额度」，到期日会作为 `aside` 窗口和顶层 `until` 显示。
